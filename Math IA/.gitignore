@@ -1,0 +1,11 @@
+# Virtual environment
+/bin/
+/include/
+/lib/
+/share/
+/pyvenv.cfg
+/CACHEDIR.TAG
+
+# Python cache
+__pycache__/
+*.py[cod]
