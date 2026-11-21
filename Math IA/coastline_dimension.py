@@ -13,7 +13,7 @@ Run this file directly to save italian_coastline_analysis.png beside this script
 """
 import math
 from pathlib import Path
-
+from region_testing import SEGMENTS, PATH, CRS_METRIC, load_coast_segment
 import numpy as np
 import geopandas as gpd
 import pyogrio
@@ -341,33 +341,48 @@ def plot_analysis(coastline, box_result, ruler_result, output):
     fig.savefig(output, dpi=200)
     plt.close(fig)
 
+def load_coast_segment(coast_path, lonlat_box, crs=CRS_METRIC):
+    """lonlat_box = (lon_min, lat_min, lon_max, lat_max)"""
+    import geopandas as gpd
+    from shapely.geometry import box
+    gdf = gpd.read_file(coast_path)
+    clip = box(*lonlat_box)
+    seg = gpd.clip(gdf, clip).to_crs(crs)
+    seg = seg.explode(index_parts=False)          # split MultiLineStrings
+    lines = [list(g.coords) for g in seg.geometry if g.length > 0]
+    return lines
 
-if __name__ == "__main__":
-    base = Path(__file__).resolve().parent
-    coast_path = base / "data/ne_10m_coastline/ne_10m_coastline.shp"
-    country_path = find_country_file()
-    if country_path is None:
-        raise FileNotFoundError(
-            "Italy's Natural Earth country boundary is missing. Place the "
-            "Natural Earth countries shapefile in data/ne_10m_admin_0_countries/."
-        )
 
-    italy_coast, _ = load_italy_coast(coast_path, country_path)
-    box_result = box_dimension(italy_coast, kmin=2, kmax=8, b=2)
-    _, _, side = bounding_square(np.vstack(italy_coast))
-    ruler_sizes = side / (2.0 ** np.arange(2, 9))
-    ruler_result = ruler_dimension(italy_coast, ruler_sizes)
-    output = base / "italian_coastline_analysis.png"
-    plot_analysis(italy_coast, box_result, ruler_result, output)
+# if __name__ == "__main__":
+#     base = Path(__file__).resolve().parent
+#     coast_path = base / "data/ne_10m_coastline/ne_10m_coastline.shp"
+#     country_path = find_country_file()
+#     if country_path is None:
+#         raise FileNotFoundError(
+#             "Italy's Natural Earth country boundary is missing. Place the "
+#             "Natural Earth countries shapefile in data/ne_10m_admin_0_countries/."
+#         )
+#
+#     italy_coast, _ = load_italy_coast(coast_path, country_path)
+#     box_result = box_dimension(italy_coast, kmin=2, kmax=8, b=2)
+#     _, _, side = bounding_square(np.vstack(italy_coast))
+#     ruler_sizes = side / (2.0 ** np.arange(2, 9))
+#     ruler_result = ruler_dimension(italy_coast, ruler_sizes)
+#     output = base / "italian_coastline_analysis.png"
+#     plot_analysis(italy_coast, box_result, ruler_result, output)
+#
+#     print(f"Italian coast: {len(italy_coast)} connected segments, "
+#           f"{sum(len(line) for line in italy_coast)} points")
+#     print(f"Country boundary data: {country_path}")
+#     print(f"Box-counting dimension: {box_result[0]:.4f} +/- {box_result[1]:.4f} "
+#           f"(R^2={box_result[2]:.4f})")
+#     print(f"Ruler-method dimension: {ruler_result[0]:.4f} +/- {ruler_result[1]:.4f} "
+#           f"(R^2={ruler_result[2]:.4f})")
+#     print(f"Saved graphs to {output}")
 
-    print(f"Italian coast: {len(italy_coast)} connected segments, "
-          f"{sum(len(line) for line in italy_coast)} points")
-    print(f"Country boundary data: {country_path}")
-    print(f"Box-counting dimension: {box_result[0]:.4f} +/- {box_result[1]:.4f} "
-          f"(R^2={box_result[2]:.4f})")
-    print(f"Ruler-method dimension: {ruler_result[0]:.4f} +/- {ruler_result[1]:.4f} "
-          f"(R^2={ruler_result[2]:.4f})")
-    print(f"Saved graphs to {output}")
+if __name__ == '__main__':
+    coast_gdf = gpd.read_file(PATH)
+    plot_segments(coast_gdf, SEGMENTS)
 
 curve = koch((0.0, 0.0), (1.0, 0.0), depth=9)
 D_box = box_dimension(curve, kmin=5, kmax=8, b=3)
