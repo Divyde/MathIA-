@@ -9,3 +9,4 @@
 # Python cache
 __pycache__/
 *.py[cod]
+Math IA/data/lines.*

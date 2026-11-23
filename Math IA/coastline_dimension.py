@@ -1,390 +1,260 @@
 """
-Maths IA - fractal dimension of the Italian coastline.
+coastline_dimension.py  --  FIRST DRAFT (AI-assisted, to be rewritten by the student)
 
-Contents
-  1. koch()                    recursive Koch curve generator (validation curve)
-  2. boxtree_counts()          recursive box counting (each box splits into b x b)
-  3. ruler_length()            divider / ruler method (Richardson)
-  4. linear_fit()              least squares gradient, standard error, R^2
-  5. load_italy_coast()        clip the coastline to Italy and project to metres
-  6. plot_analysis()           map and labelled log-log graphs
+Functions: koch, densify, bounding_square, boxtree_counts, box_counts,
+           ruler_length, linear_fit, box_dimension, ruler_dimension,
+           local_slopes, run_koch_validation, main
 
-Run this file directly to save italian_coastline_analysis.png beside this script.
+A "line" is an (n, 2) array of x, y points in metres.
+A "lines" argument is a list of such arrays (one coast segment can have several).
 """
 import math
-from pathlib import Path
-from region_testing import SEGMENTS, PATH, CRS_METRIC, load_coast_segment
 import numpy as np
-import geopandas as gpd
-import pyogrio
+import matplotlib.pyplot as plt
 
 
-# ----------------------------------------------------------------------
-# 1. Koch curve (recursive)
-# ----------------------------------------------------------------------
-def koch(p1, p2, depth):
-    """
-    """
-    if depth == 0:
-        return [p1, p2] #base case
-
-    (x1, y1), (x2, y2) = p1, p2
-    dx, dy = (x2 - x1) / 3, (y2 - y1) / 3
-    a = (x1 + dx, y1 + dy)
-    b = (x1 + 2 * dx, y1 + 2 * dy)
-    c, s = 0.5, math.sqrt(3) / 2
-    peak = (a[0] + dx * c - dy * s, a[1] + dx * s + dy * c)
-
-    points = []
-    for q1, q2 in [(p1, a), (a, peak), (peak, b), (b, p2)]:
-        points.extend(koch(q1, q2, depth - 1)[:-1])   # drop shared end point
-    points.append(p2)
-    return points
-
-# extras
-
-def densify(points, step):
-    pts = np.asarray(points, dtype=float)
-    if len(pts) < 2:
-        raise ValueError("At least two points are required.")
-    if not np.isfinite(pts).all() or step <= 0:
-        raise ValueError("Points must be finite and step must be positive.")
-    out = []
-    for p, q in zip(pts[:-1], pts[1:]):
-        n = max(1, int(math.ceil(np.hypot(*(q - p)) / step)))
-        t = np.linspace(0.0, 1.0, n, endpoint=False)[:, None]
-        out.append(p + t * (q - p))
-    out.append(pts[-1:])
-    return np.vstack(out)
-
-def bounding_square(pts):
-    if len(pts) == 0:
-        raise ValueError("At least one point is required.")
-    x0, y0 = pts.min(axis=0)
-    side = float((pts.max(axis=0) - pts.min(axis=0)).max()) * (1 + 1e-9)
-    if side <= 0:
-        raise ValueError("The points do not span a non-zero area.")
-    return float(x0), float(y0), side
+# ---------------------------------------------------------------- Koch curve
+def koch(n, p0=(0.0, 0.0), p1=(1.0, 0.0)):
+    """Recursive Koch curve of depth n from p0 to p1. Returns (4**n + 1, 2) array."""
+    p0 = np.array(p0, float)
+    p1 = np.array(p1, float)
+    if n == 0:
+        return np.array([p0, p1])
+    d = (p1 - p0) / 3.0
+    a = p0 + d
+    b = p0 + 2.0 * d
+    c, s = 0.5, math.sqrt(3) / 2                      # rotate d by +60 degrees
+    peak = a + np.array([c * d[0] - s * d[1], s * d[0] + c * d[1]])
+    parts = []
+    for q0, q1 in ((p0, a), (a, peak), (peak, b), (b, p1)):
+        parts.append(koch(n - 1, q0, q1)[:-1])         # drop last point (duplicate)
+    parts.append(p1[None, :])
+    return np.vstack(parts)
 
 
-def as_curves(points):
-    """Normalize one polyline or a collection of polylines to validated arrays."""
-    try:
-        array = np.asarray(points, dtype=float)
-    except (TypeError, ValueError):
-        array = None
-    if array is not None and array.ndim == 2:
-        curves = [array]
-    elif array is not None and array.ndim == 3:
-        curves = list(array)
-    else:
-        curves = [np.asarray(curve, dtype=float) for curve in points]
-    if not curves:
-        raise ValueError("At least one curve is required.")
-    for curve in curves:
-        if curve.ndim != 2 or curve.shape[1] != 2 or len(curve) < 2:
-            raise ValueError("Each curve must contain at least two (x, y) points.")
-        if not np.isfinite(curve).all():
-            raise ValueError("Curve coordinates must be finite.")
-    return curves
+# ------------------------------------------------------------------ helpers
+def densify(line, max_step):
+    """Insert points so no gap between neighbours exceeds max_step."""
+    line = np.asarray(line, float)
+    seg = np.diff(line, axis=0)
+    d = np.hypot(seg[:, 0], seg[:, 1])
+    k = np.maximum(1, np.ceil(d / max_step).astype(int))   # pieces per segment
+    idx = np.repeat(np.arange(len(k)), k)
+    start = np.cumsum(k) - k
+    frac = (np.arange(k.sum()) - np.repeat(start, k)) / np.repeat(k, k)
+    pts = line[idx] + frac[:, None] * seg[idx]
+    return np.vstack([pts, line[-1]])
 
 
-def boxtree_counts(points, x0, y0, side, max_level, counts, level=0, b=2):
-    if len(points) == 0:
-        return
-    counts[level] += 1
+def bounding_square(lines):
+    """Smallest square (x0, y0, side) containing all points (tiny pad added)."""
+    allp = np.vstack([np.asarray(l, float) for l in lines])
+    xmin, ymin = allp.min(axis=0)
+    xmax, ymax = allp.max(axis=0)
+    s = max(xmax - xmin, ymax - ymin) * 1.0001
+    return xmin, ymin, s
+
+
+def line_length(line):
+    seg = np.diff(np.asarray(line, float), axis=0)
+    return float(np.hypot(seg[:, 0], seg[:, 1]).sum())
+
+
+def median_spacing(lines):
+    steps = np.concatenate([np.hypot(*np.diff(np.asarray(l, float), axis=0).T) for l in lines])
+    return float(np.median(steps))
+
+
+# -------------------------------------------------------------- box counting
+def boxtree_counts(pts, x0, y0, s, b, max_level, level=0, counts=None):
+    """Recursive subdivision. counts[k] = number of occupied boxes of side s / b**k."""
+    if counts is None:
+        counts = [0] * (max_level + 1)
+    counts[level] += 1                                   # this box is occupied
     if level == max_level:
-        return                   # Base case: no points in this box (nothing to count) or max_level reached.
+        return counts
+    h = s / b
+    ix = np.clip(((pts[:, 0] - x0) // h).astype(int), 0, b - 1)
+    iy = np.clip(((pts[:, 1] - y0) // h).astype(int), 0, b - 1)
+    key = ix * b + iy
+    order = np.argsort(key, kind="stable")
+    key, pts = key[order], pts[order]
+    cuts = np.flatnonzero(np.diff(key)) + 1
+    firsts = key[np.r_[0, cuts]]
+    for chunk, kk in zip(np.split(pts, cuts), firsts):
+        boxtree_counts(chunk, x0 + (kk // b) * h, y0 + (kk % b) * h, h, b,
+                       max_level, level + 1, counts)
+    return counts
 
-    cell = side / b
-    ix = np.minimum(((points[:, 0] - x0) // cell).astype(int), b - 1)
-    iy = np.minimum(((points[:, 1] - y0) // cell).astype(int), b - 1)
-    for i in range(b):
-        for j in range(b):
-            mask = (ix == i) & (iy == j)
-            if mask.any():
-                boxtree_counts(points[mask], x0 + i * cell, y0 + j * cell,
-                               cell, max_level, counts, level + 1, b)
 
-def box_counts(points, max_level, b=2):
-    curves = as_curves(points)
-    if max_level < 1 or b < 2:
-        raise ValueError("max_level must be positive and b must be at least 2.")
-    pts = np.vstack(curves)
-    x0, y0, side = bounding_square(pts)
-    dense = np.vstack([
-        densify(curve, step=side / b ** (max_level + 1)) for curve in curves
-    ])
-    counts = [0] * (max_level + 1)
-    boxtree_counts(dense, x0, y0, side, max_level, counts, 0, b)
-    eps = np.array([side / b ** k for k in range(max_level + 1)])
-    return eps, np.array(counts, dtype=float)
+def box_counts(lines, b=2, max_level=8):
+    """Return eps array (box sides) and N(eps) for levels 0..max_level."""
+    x0, y0, s = bounding_square(lines)
+    finest = s / b ** max_level
+    pts = np.vstack([densify(l, finest / 2.0) for l in lines])   # so long straight bits count
+    counts = boxtree_counts(pts, x0, y0, s, b, max_level)
+    eps = np.array([s / b ** k for k in range(max_level + 1)])
+    return eps, np.array(counts, float)
 
-def ruler_length(points, eps):
-    pts = np.asarray(points, dtype=float)
-    if pts.ndim != 2 or pts.shape[1] != 2 or len(pts) < 2:
-        raise ValueError("points must be an array of at least two (x, y) pairs.")
-    if not np.isfinite(pts).all() or not np.isfinite(eps) or eps <= 0:
-        raise ValueError("points must be finite and eps must be positive.")
-    pts = pts[np.r_[True, np.any(np.diff(pts, axis=0) != 0, axis=1)]]
-    if len(pts) < 2:
-        raise ValueError("The curve must contain at least one non-zero segment.")
 
-    cur = pts[0].copy()
-    segment = 0
-    steps = 0
-    while segment < len(pts) - 1:
-        found = False
-        for j in range(segment, len(pts) - 1):
-            a = cur if j == segment else pts[j]
-            b = pts[j + 1]
-            d = b - a
-            A = float(d @ d)
-            if A == 0:
-                continue
-            f = a - cur
-            B = 2 * float(d @ f)
-            C = float(f @ f - eps ** 2)
-            discriminant = B * B - 4 * A * C
-            if discriminant >= 0:
-                root = math.sqrt(discriminant)
-                intersections = sorted(
-                    t for t in ((-B - root) / (2 * A), (-B + root) / (2 * A))
-                    if 1e-12 < t <= 1 + 1e-12
-                )
-                if intersections:
-                    t = min(intersections)
-                    cur = a + min(t, 1.0) * d
-                    segment = j
-                    steps += 1
-                    found = True
-                    break
-        if not found:
+# --------------------------------------------------------------- ruler method
+def ruler_length(line, eps):
+    """Divider walk (iterative). Returns L(eps) = n * eps + r."""
+    P = np.asarray(line, float)
+    xs, ys = P[:, 0].tolist(), P[:, 1].tolist()
+    N = len(xs)
+    cx, cy = xs[0], ys[0]
+    i, n = 0, 0
+    while i < N - 1:
+        ax, ay = cx, cy
+        j, hit = i, None
+        while j < N - 1:
+            bx, by = xs[j + 1], ys[j + 1]
+            if math.hypot(bx - cx, by - cy) >= eps:      # segment leaves the circle
+                dx, dy = bx - ax, by - ay
+                fx, fy = ax - cx, ay - cy
+                A = dx * dx + dy * dy
+                B = 2.0 * (fx * dx + fy * dy)
+                C = fx * fx + fy * fy - eps * eps
+                t = (-B + math.sqrt(max(B * B - 4 * A * C, 0.0))) / (2 * A)   # "+" root
+                t = min(max(t, 0.0), 1.0)
+                hit = (ax + t * dx, ay + t * dy)
+                break
+            ax, ay = bx, by
+            j += 1
+        if hit is None:
             break
-    remainder = float(np.hypot(*(pts[-1] - cur)))
-    return steps * eps + remainder, steps
+        cx, cy = hit
+        i = j
+        n += 1
+    r = math.hypot(xs[-1] - cx, ys[-1] - cy)
+    return n * eps + r
 
 
-def ruler_lengths(points, eps_list):
-    curves = as_curves(points)
-    return np.array([
-        sum(ruler_length(curve, e)[0] for curve in curves) for e in eps_list
-    ])
-
-
-# ----------------------------------------------------------------------
-# 4. Least squares regression
-# ----------------------------------------------------------------------
+# -------------------------------------------------------------------- fitting
 def linear_fit(x, y):
-    """Gradient m, intercept c, standard error of m, and R^2 for y = m x + c."""
+    """Least squares line. Returns slope, intercept, standard error of slope, R^2."""
     x, y = np.asarray(x, float), np.asarray(y, float)
     n = len(x)
-    if x.ndim != 1 or y.ndim != 1 or len(y) != n or n < 3:
-        raise ValueError("At least three paired x and y values are required.")
-    if not np.isfinite(x).all() or not np.isfinite(y).all():
-        raise ValueError("x and y must contain only finite values.")
-    sxx = np.sum((x - x.mean()) ** 2)
-    if sxx == 0:
-        raise ValueError("x values must not all be equal.")
-    m = np.sum((x - x.mean()) * (y - y.mean())) / sxx
-    c = y.mean() - m * x.mean()
-    resid = y - (m * x + c)
-    s = math.sqrt(np.sum(resid ** 2) / (n - 2))
-    se_m = s / math.sqrt(sxx)
-    syy = np.sum((y - y.mean()) ** 2)
-    r2 = 1.0 if syy == 0 and np.sum(resid ** 2) == 0 else (
-        1 - np.sum(resid ** 2) / syy if syy else float("nan")
-    )
-    return m, c, se_m, r2
+    xm, ym = x.mean(), y.mean()
+    sxx = np.sum((x - xm) ** 2)
+    slope = np.sum((x - xm) * (y - ym)) / sxx
+    icpt = ym - slope * xm
+    resid = y - (icpt + slope * x)
+    se = math.sqrt(np.sum(resid ** 2) / (n - 2)) / math.sqrt(sxx) if n > 2 else float("nan")
+    ss_tot = np.sum((y - ym) ** 2)
+    r2 = 1 - np.sum(resid ** 2) / ss_tot if ss_tot > 0 else float("nan")
+    return slope, icpt, se, r2
 
 
-def box_dimension(points, kmin, kmax, b=2):
-    """D_B from the gradient of ln N against ln(1/eps) over levels kmin..kmax."""
-    if kmin < 0 or kmax <= kmin:
-        raise ValueError("Require 0 <= kmin < kmax.")
-    eps, N = box_counts(points, kmax, b)
-    x = np.log(1 / eps[kmin:kmax + 1])
-    y = np.log(N[kmin:kmax + 1])
-    m, c, se, r2 = linear_fit(x, y)
-    return m, se, r2, (x, y)
+def _select(eps, vals, fit_range):
+    if fit_range is None:
+        return eps, vals
+    lo, hi = fit_range
+    m = (eps >= lo) & (eps <= hi)
+    return eps[m], vals[m]
 
 
-def ruler_dimension(points, eps_list):
-    """D from Richardson: ln L = ln F + (1 - D) ln eps, so D = 1 - gradient."""
-    eps_list = np.asarray(eps_list, dtype=float)
-    if eps_list.ndim != 1 or len(eps_list) < 3 or np.any(eps_list <= 0):
-        raise ValueError("eps_list must contain at least three positive ruler lengths.")
-    L = ruler_lengths(points, eps_list)
-    x, y = np.log(eps_list), np.log(L)
-    m, c, se, r2 = linear_fit(x, y)
-    return 1 - m, se, r2, (x, y)
+def box_dimension(lines, b=2, max_level=8, min_level=2, fit_range=None):
+    """D_B = gradient of ln N against ln(1/eps). Returns D, se, R^2, eps, N."""
+    eps, N = box_counts(lines, b, max_level)
+    e, n = eps[min_level:], N[min_level:]
+    e_fit, n_fit = _select(e, n, fit_range)
+    D, _, se, r2 = linear_fit(np.log(1 / e_fit), np.log(n_fit))
+    return D, se, r2, eps, N
 
 
-
-def find_country_file():
-    """Find a Natural Earth country-boundary file, including the local test fixture."""
-    base = Path(__file__).resolve().parent
-    candidates = [
-        base / "data/ne_10m_admin_0_countries/ne_10m_admin_0_countries.shp",
-        base / "data/ne_110m_admin_0_countries/ne_110m_admin_0_countries.shp",
-        Path(pyogrio.__file__).resolve().parent
-        / "tests/fixtures/naturalearth_lowres/naturalearth_lowres.shp",
-    ]
-    return next((path for path in candidates if path.is_file()), None)
+def ruler_dimension(lines, eps_list, fit_range=None):
+    """D = 1 - gradient of ln L against ln eps. Returns D, se, R^2, eps, L."""
+    eps = np.array(sorted(eps_list), float)
+    L = np.array([sum(ruler_length(l, e) for l in lines) for e in eps])
+    e_fit, L_fit = _select(eps, L, fit_range)
+    slope, _, se, r2 = linear_fit(np.log(e_fit), np.log(L_fit))
+    return 1 - slope, se, r2, eps, L
 
 
-def load_italy_coast(coast_path, country_path, epsg=32632):
-    """Clip Natural Earth coastline to Italy and return its longest connected line."""
-    from shapely.ops import linemerge
-
-    if not Path(coast_path).is_file():
-        raise FileNotFoundError(f"Coastline shapefile not found: {coast_path}")
-    if not Path(country_path).is_file():
-        raise FileNotFoundError(
-            "Italy's boundary shapefile was not found. Put Natural Earth's "
-            "ne_10m_admin_0_countries.shp and its companion files in "
-            "'data/ne_10m_admin_0_countries/'."
-        )
-
-    coast = gpd.read_file(coast_path)
-    countries = gpd.read_file(country_path)
-    name_column = next(
-        (column for column in ("ADMIN", "name", "NAME") if column in countries.columns),
-        None,
-    )
-    if name_column is None:
-        raise ValueError("Country data must contain an ADMIN, name, or NAME column.")
-    italy = countries[countries[name_column].astype(str).str.casefold() == "italy"]
-    if italy.empty and "iso_a3" in countries.columns:
-        italy = countries[countries["iso_a3"] == "ITA"]
-    if italy.empty:
-        raise ValueError("The country-boundary file does not contain Italy.")
-
-    if coast.crs is None:
-        raise ValueError("The coastline file must declare its coordinate reference system.")
-    # The packaged low-resolution fallback needs a wider margin to retain
-    # detailed shoreline that its simplified country polygon cuts off.
-    buffer_m = 15000 if Path(country_path).name == "naturalearth_lowres.shp" else 5000
-    mask_metric = italy.to_crs(epsg).geometry.buffer(buffer_m)
-    mask = gpd.GeoSeries(mask_metric, crs=epsg).to_crs(coast.crs).union_all()
-    clipped = coast.clip(mask).to_crs(epsg)
-    lines = []
-    for geometry in clipped.geometry:
-        if geometry is None or geometry.is_empty:
-            continue
-        if geometry.geom_type == "LineString":
-            lines.append(geometry)
-        elif geometry.geom_type == "MultiLineString":
-            lines.extend(geometry.geoms)
-    if not lines:
-        raise ValueError("No coastline intersected the Italian country boundary.")
-    merged = linemerge(lines)
-    components = list(merged.geoms) if hasattr(merged, "geoms") else [merged]
-    components = [line for line in components if line.geom_type == "LineString"]
-    if not components:
-        raise ValueError("Could not extract a connected Italian coastline.")
-    return [np.asarray(line.coords) for line in components], coast.crs
+def local_slopes(eps, y, window=3, ruler=False):
+    """Sliding-window slope. Returns list of (centre eps, local D)."""
+    eps, y = np.asarray(eps, float), np.asarray(y, float)
+    order = np.argsort(eps)[::-1]                        # large -> small eps
+    eps, y = eps[order], y[order]
+    out = []
+    for i in range(len(eps) - window + 1):
+        ex, ey = eps[i:i + window], y[i:i + window]
+        if ruler:
+            D = 1 - np.polyfit(np.log(ex), np.log(ey), 1)[0]
+        else:
+            D = np.polyfit(np.log(1 / ex), np.log(ey), 1)[0]
+        out.append((float(np.exp(np.log(ex).mean())), float(D)))
+    return out
 
 
-# ----------------------------------------------------------------------
-# 6. Graph for the write-up
-# ----------------------------------------------------------------------
-def plot_fit(x, y, xlabel, ylabel, title, outfile):
-    import matplotlib.pyplot as plt
-    m, c, se, r2 = linear_fit(x, y)
-    plt.figure(figsize=(6, 4))
-    plt.scatter(x, y, label="data")
-    xs = np.linspace(min(x), max(x), 50)
-    plt.plot(xs, m * xs + c, label=f"fit: gradient = {m:.3f} ± {se:.3f}, R² = {r2:.4f}")
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
-    plt.title(title)
-    plt.legend()
+# ------------------------------------------------------------------- plotting
+def plot_loglog(eps, vals, D, title, ruler=False, fit_range=None):
+    fig, ax = plt.subplots(figsize=(6, 4))
+    if ruler:
+        ax.loglog(eps, vals, "o-")
+        ax.set_ylabel("L(eps) (m)")
+        ax.set_xlabel("ruler length eps (m)")
+    else:
+        ax.loglog(1 / eps, vals, "o-")
+        ax.set_ylabel("N(eps)")
+        ax.set_xlabel("1 / eps (1/m)")
+    ax.set_title(f"{title}: D = {D:.3f}")
+    ax.grid(True, which="both", alpha=0.3)
     plt.tight_layout()
-    plt.savefig(outfile, dpi=200)
-    plt.close()
+    return fig
 
 
-def plot_analysis(coastline, box_result, ruler_result, output):
-    import matplotlib.pyplot as plt
-
-    box_d, box_se, box_r2, (box_x, box_y) = box_result
-    ruler_d, ruler_se, ruler_r2, (ruler_x, ruler_y) = ruler_result
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
-
-    for component in coastline:
-        axes[0].plot(component[:, 0], component[:, 1], color="steelblue", linewidth=0.8)
-    axes[0].set_title("Italian coastline")
-    axes[0].set_xlabel("Easting (m)")
-    axes[0].set_ylabel("Northing (m)")
-    axes[0].set_aspect("equal", adjustable="datalim")
-    axes[0].grid(alpha=0.2)
-
-    for ax, x, y, title, xlabel, ylabel, dimension, error, r2 in (
-        (axes[1], box_x, box_y, "Box counting", "ln(1 / box size)", "ln(box count)",
-         box_d, box_se, box_r2),
-        (axes[2], ruler_x, ruler_y, "Ruler method", "ln(ruler size)", "ln(measured length)",
-         ruler_d, ruler_se, ruler_r2),
-    ):
-        slope = dimension if title == "Box counting" else 1 - dimension
-        intercept = float(np.mean(y) - slope * np.mean(x))
-        ax.scatter(x, y, color="steelblue", label="measurements")
-        fit_x = np.linspace(x.min(), x.max(), 100)
-        ax.plot(fit_x, slope * fit_x + intercept, color="darkorange", label="linear fit")
-        ax.set_title(f"{title}: D = {dimension:.3f} +/- {error:.3f}")
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        ax.legend(title=f"$R^2$ = {r2:.4f}")
-        ax.grid(alpha=0.2)
-
-    fig.tight_layout()
-    fig.savefig(output, dpi=200)
-    plt.close(fig)
-
-def load_coast_segment(coast_path, lonlat_box, crs=CRS_METRIC):
-    """lonlat_box = (lon_min, lat_min, lon_max, lat_max)"""
-    import geopandas as gpd
-    from shapely.geometry import box
-    gdf = gpd.read_file(coast_path)
-    clip = box(*lonlat_box)
-    seg = gpd.clip(gdf, clip).to_crs(crs)
-    seg = seg.explode(index_parts=False)          # split MultiLineStrings
-    lines = [list(g.coords) for g in seg.geometry if g.length > 0]
-    return lines
+# ----------------------------------------------------------------- validation
+def run_koch_validation(depth=9, tol=0.01):
+    """Both methods on the Koch curve. Theory: ln4 / ln3 = 1.2619."""
+    theory = math.log(4) / math.log(3)
+    line = koch(depth)
+    D_box, se_b, r2_b, _, _ = box_dimension([line], b=3, max_level=8, min_level=4)
+    eps_list = [1 / (2 * 3 ** k) for k in range(1, 7)]       # 1/6 ... 1/1458
+    D_rul, se_r, r2_r, _, _ = ruler_dimension([line], eps_list)
+    print(f"Koch depth {depth}: {len(line)} points, theory {theory:.4f}")
+    print(f"  box   D = {D_box:.4f} +- {se_b:.4f}  R2 = {r2_b:.5f}")
+    print(f"  ruler D = {D_rul:.4f} +- {se_r:.4f}  R2 = {r2_r:.5f}")
+    ok = abs(D_box - theory) < tol and abs(D_rul - theory) < tol
+    print("  PASS" if ok else "  FAIL (difference above tolerance)")
+    return ok
 
 
-# if __name__ == "__main__":
-#     base = Path(__file__).resolve().parent
-#     coast_path = base / "data/ne_10m_coastline/ne_10m_coastline.shp"
-#     country_path = find_country_file()
-#     if country_path is None:
-#         raise FileNotFoundError(
-#             "Italy's Natural Earth country boundary is missing. Place the "
-#             "Natural Earth countries shapefile in data/ne_10m_admin_0_countries/."
-#         )
-#
-#     italy_coast, _ = load_italy_coast(coast_path, country_path)
-#     box_result = box_dimension(italy_coast, kmin=2, kmax=8, b=2)
-#     _, _, side = bounding_square(np.vstack(italy_coast))
-#     ruler_sizes = side / (2.0 ** np.arange(2, 9))
-#     ruler_result = ruler_dimension(italy_coast, ruler_sizes)
-#     output = base / "italian_coastline_analysis.png"
-#     plot_analysis(italy_coast, box_result, ruler_result, output)
-#
-#     print(f"Italian coast: {len(italy_coast)} connected segments, "
-#           f"{sum(len(line) for line in italy_coast)} points")
-#     print(f"Country boundary data: {country_path}")
-#     print(f"Box-counting dimension: {box_result[0]:.4f} +/- {box_result[1]:.4f} "
-#           f"(R^2={box_result[2]:.4f})")
-#     print(f"Ruler-method dimension: {ruler_result[0]:.4f} +/- {ruler_result[1]:.4f} "
-#           f"(R^2={ruler_result[2]:.4f})")
-#     print(f"Saved graphs to {output}")
+# ----------------------------------------------------------------------- main
+def main():
+    ok = run_koch_validation()
+    if not ok:
+        print("Fix the Koch validation before trusting any coastline numbers.")
 
-if __name__ == '__main__':
-    coast_gdf = gpd.read_file(PATH)
-    plot_segments(coast_gdf, SEGMENTS)
+    from region_testing import SEGMENTS, PATH, load_coast_segment   # needs geopandas
 
-curve = koch((0.0, 0.0), (1.0, 0.0), depth=9)
-D_box = box_dimension(curve, kmin=5, kmax=8, b=3)
-D_ruler = ruler_dimension(curve, np.array([3.0 ** -n for n in range(1, 6)]) * 0.9)
-print(math.log(4) / math.log(3), D_box[0], D_ruler[0])
+    data = {name: load_coast_segment(PATH, bb) for name, bb in SEGMENTS.items()}
+
+    # common eps floor: twice the coarsest point spacing among all segments
+    spacings = {n: median_spacing(l) for n, l in data.items()}
+    eps_floor = 2 * max(spacings.values())
+    eps_list = [eps_floor * 2 ** k for k in range(6)]
+    print(f"\nCommon eps floor {eps_floor:.0f} m; ruler lengths {[round(e) for e in eps_list]}")
+
+    for name, lines in data.items():
+        length_km = sum(line_length(l) for l in lines) / 1000
+        print(f"\n{name}: {len(lines)} lines, {length_km:.1f} km, "
+              f"median spacing {spacings[name]:.0f} m")
+        _, _, s = bounding_square(lines)
+        max_level = max(3, min(10, int(math.log2(s / eps_floor))))
+        fr = (eps_floor, eps_list[-1])
+        Db, se_b, r2_b, e_b, N_b = box_dimension(lines, b=2, max_level=max_level, fit_range=fr)
+        Dr, se_r, r2_r, e_r, L_r = ruler_dimension(lines, eps_list)
+        print(f"  box   D = {Db:.3f} +- {se_b:.3f}  R2 = {r2_b:.3f}  (eps {fr[0]:.0f}-{fr[1]:.0f} m)")
+        print(f"  ruler D = {Dr:.3f} +- {se_r:.3f}  R2 = {r2_r:.3f}  (eps {fr[0]:.0f}-{fr[1]:.0f} m)")
+        print("  local box slopes  :", [(round(e), round(d, 3)) for e, d in local_slopes(e_b, N_b)])
+        print("  local ruler slopes:", [(round(e), round(d, 3)) for e, d in local_slopes(e_r, L_r, ruler=True)])
+        plot_loglog(e_b, N_b, Db, f"{name} box")
+        plot_loglog(e_r, L_r, Dr, f"{name} ruler", ruler=True)
+    plt.show()
+
+
+if __name__ == "__main__":
+    main()

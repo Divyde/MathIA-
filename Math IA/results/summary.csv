@@ -1,0 +1,13 @@
+region,variant,method,D,std_error,R2,n_points,eps_lo_m,eps_hi_m,length_km,lines,pct_longer_when_ruler_halved
+Puglia (smooth),all lines,box,1.0702,0.0053,0.9998,11,45,45714,895.3,132,4.98
+Puglia (smooth),all lines,ruler,1.0722,0.0047,0.959,12,29,59106,895.3,132,5.13
+Puglia (smooth),longest line only,box,1.0547,0.0066,0.9996,11,45,45714,488.2,1,3.86
+Puglia (smooth),longest line only,ruler,1.0719,0.0067,0.9198,12,29,59106,488.2,1,5.11
+Liguria (rugged),all lines,box,1.1095,0.0048,0.9998,11,50,50786,640.9,73,7.89
+Liguria (rugged),all lines,ruler,1.1246,0.0076,0.9642,12,29,59106,640.9,73,9.02
+Liguria (rugged),longest line only,box,1.0958,0.0045,0.9998,11,50,50786,587.9,1,6.86
+Liguria (rugged),longest line only,ruler,1.1086,0.009,0.9363,12,29,59106,587.9,1,7.82
+Sardinia Gallura,all lines,box,1.2786,0.0267,0.9961,11,31,31962,702.9,509,21.3
+Sardinia Gallura,all lines,ruler,1.3075,0.0175,0.9685,12,29,59106,702.9,509,23.76
+Sardinia Gallura,longest line only,box,1.2034,0.0227,0.9968,11,29,29723,393.4,1,15.14
+Sardinia Gallura,longest line only,ruler,1.2282,0.0119,0.9736,12,29,59106,393.4,1,17.14
